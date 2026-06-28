@@ -1,19 +1,10 @@
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from models import db, CheckIn, Member, Course, Booking, Membership
+from api.services import get_active_membership
 
 
 checkin_bp = Blueprint('checkin', __name__)
-
-
-def get_active_membership(member_id):
-    memberships = Membership.query.filter_by(member_id=member_id).all()
-    active_membership = None
-    for m in memberships:
-        if m.is_active():
-            if active_membership is None or m.remaining_sessions > active_membership.remaining_sessions:
-                active_membership = m
-    return active_membership
 
 
 @checkin_bp.route('/scan', methods=['POST'])

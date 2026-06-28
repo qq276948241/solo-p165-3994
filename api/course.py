@@ -1,6 +1,12 @@
 from datetime import datetime, timedelta, time
 from flask import Blueprint, request, jsonify, current_app
 from models import db, Course, Booking, Member, Membership, Coach, Waitlist
+from api.services import (
+    validate_membership_for_booking,
+    process_waitlist,
+    convert_waitlist_entry,
+    get_waitlist_info_for_course,
+)
 
 
 course_bp = Blueprint('course', __name__)
@@ -107,30 +113,9 @@ def get_course_detail(course_id):
                 'phone': member.phone
             })
 
-    waitlists = Waitlist.query.filter_by(
-        course_id=course_id,
-        status='waiting'
-    ).order_by(Waitlist.position).all()
-
-    waitlist_members = []
-    for wl in waitlists:
-        member = Member.query.get(wl.member_id)
-        if member:
-            waitlist_members.append({
-                'waitlist_id': wl.id,
-                'member_id': member.id,
-                'name': member.name,
-                'phone': member.phone,
-                'position': wl.position
-            })
-
     course_dict = course.to_dict()
     course_dict['booked_members'] = members
-    course_dict['waitlist'] = {
-        'count': len(waitlist_members),
-        'max_waitlist': 5,
-        'members': waitlist_members
-    }
+    course_dict['waitlist'] = get_waitlist_info_for_course(course_id)
 
     return jsonify(course_dict), 200
 
@@ -138,7 +123,6 @@ def get_course_detail(course_id):
 @course_bp.route('/<int:course_id>/book', methods=['POST'])
 def book_course(course_id):
     data = request.get_json()
-
     if not data or 'member_id' not in data:
         return jsonify({'error': '缺少会员ID'}), 400
 
@@ -159,17 +143,9 @@ def book_course(course_id):
     if course_datetime < datetime.utcnow():
         return jsonify({'error': '课程已开始，无法预约'}), 400
 
-    active_membership = None
-    for m in member.memberships:
-        if m.is_active():
-            if active_membership is None or m.remaining_sessions > active_membership.remaining_sessions:
-                active_membership = m
-
-    if not active_membership:
-        return jsonify({'error': '没有有效的会员卡'}), 400
-
-    if active_membership.card_type != 'monthly' and active_membership.remaining_sessions <= 0:
-        return jsonify({'error': '会员卡次数不足'}), 400
+    _, error = validate_membership_for_booking(member)
+    if error:
+        return jsonify({'error': error}), 400
 
     existing_booking = Booking.query.filter_by(
         member_id=member_id,
@@ -194,16 +170,7 @@ def book_course(course_id):
     db.session.flush()
 
     if existing_waitlist:
-        existing_waitlist.status = 'converted'
-        existing_waitlist.converted_to_booking_at = datetime.utcnow()
-
-        waitlists = Waitlist.query.filter_by(
-            course_id=course_id,
-            status='waiting'
-        ).order_by(Waitlist.position).all()
-
-        for idx, wl in enumerate(waitlists):
-            wl.position = idx + 1
+        convert_waitlist_entry(existing_waitlist)
 
     db.session.commit()
 
@@ -220,75 +187,9 @@ def book_course(course_id):
     return jsonify(response_data), 201
 
 
-def process_waitlist(course_id):
-    max_waitlist = 5
-
-    course = Course.query.get(course_id)
-    if not course or course.is_full():
-        return None
-
-    next_waitlist = Waitlist.query.filter_by(
-        course_id=course_id,
-        status='waiting'
-    ).order_by(Waitlist.position).first()
-
-    if not next_waitlist:
-        return None
-
-    member = Member.query.get(next_waitlist.member_id)
-    if not member:
-        next_waitlist.status = 'cancelled'
-        db.session.commit()
-        return process_waitlist(course_id)
-
-    active_membership = None
-    for m in member.memberships:
-        if m.is_active():
-            if active_membership is None or m.remaining_sessions > active_membership.remaining_sessions:
-                active_membership = m
-
-    if not active_membership:
-        next_waitlist.status = 'cancelled'
-        db.session.commit()
-        return process_waitlist(course_id)
-
-    if active_membership.card_type != 'monthly' and active_membership.remaining_sessions <= 0:
-        next_waitlist.status = 'cancelled'
-        db.session.commit()
-        return process_waitlist(course_id)
-
-    booking = Booking(
-        member_id=member.id,
-        course_id=course_id,
-        status='booked'
-    )
-    db.session.add(booking)
-
-    next_waitlist.status = 'converted'
-    next_waitlist.converted_to_booking_at = datetime.utcnow()
-
-    waitlists = Waitlist.query.filter_by(
-        course_id=course_id,
-        status='waiting'
-    ).order_by(Waitlist.position).all()
-
-    for idx, wl in enumerate(waitlists):
-        wl.position = idx + 1
-
-    db.session.commit()
-
-    return {
-        'member_id': member.id,
-        'member_name': member.name,
-        'member_phone': member.phone,
-        'booking': booking.to_dict()
-    }
-
-
 @course_bp.route('/<int:course_id>/cancel', methods=['POST'])
 def cancel_booking(course_id):
     data = request.get_json()
-
     if not data or 'member_id' not in data:
         return jsonify({'error': '缺少会员ID'}), 400
 
@@ -327,214 +228,6 @@ def cancel_booking(course_id):
         }
 
     return jsonify(response_data), 200
-
-
-@course_bp.route('/<int:course_id>/waitlist', methods=['POST'])
-def join_waitlist(course_id):
-    data = request.get_json()
-
-    if not data or 'member_id' not in data:
-        return jsonify({'error': '缺少会员ID'}), 400
-
-    member_id = data['member_id']
-    max_waitlist = 5
-
-    member = Member.query.get(member_id)
-    if not member:
-        return jsonify({'error': '会员不存在'}), 404
-
-    course = Course.query.get(course_id)
-    if not course:
-        return jsonify({'error': '课程不存在'}), 404
-
-    course_datetime = datetime.combine(course.course_date, course.start_time)
-    if course_datetime < datetime.utcnow():
-        return jsonify({'error': '课程已开始，无法加入候补'}), 400
-
-    existing_booking = Booking.query.filter_by(
-        member_id=member_id,
-        course_id=course_id,
-        status='booked'
-    ).first()
-    if existing_booking:
-        return jsonify({'error': '您已预约该课程'}), 400
-
-    if not course.is_full():
-        return jsonify({'error': '课程还有名额，请直接预约'}), 400
-
-    existing_waitlist = Waitlist.query.filter_by(
-        member_id=member_id,
-        course_id=course_id,
-        status='waiting'
-    ).first()
-    if existing_waitlist:
-        return jsonify({
-            'message': f'您当前候补第{existing_waitlist.position}位',
-            'waitlist': existing_waitlist.to_dict()
-        }), 200
-
-    waitlist_count = Waitlist.query.filter_by(
-        course_id=course_id,
-        status='waiting'
-    ).count()
-
-    if waitlist_count >= max_waitlist:
-        return jsonify({'error': '候补名单已满（最多5人）'}), 400
-
-    active_membership = None
-    for m in member.memberships:
-        if m.is_active():
-            if active_membership is None or m.remaining_sessions > active_membership.remaining_sessions:
-                active_membership = m
-
-    if not active_membership:
-        return jsonify({'error': '没有有效的会员卡'}), 400
-
-    if active_membership.card_type != 'monthly' and active_membership.remaining_sessions <= 0:
-        return jsonify({'error': '会员卡次数不足'}), 400
-
-    waitlist = Waitlist(
-        member_id=member_id,
-        course_id=course_id,
-        position=waitlist_count + 1,
-        status='waiting'
-    )
-    db.session.add(waitlist)
-    db.session.commit()
-
-    return jsonify({
-        'message': f'候补登记成功，您当前候补第{waitlist.position}位',
-        'waitlist': waitlist.to_dict()
-    }), 201
-
-
-@course_bp.route('/<int:course_id>/waitlist/<int:member_id>', methods=['GET'])
-def get_waitlist_position(course_id, member_id):
-    member = Member.query.get(member_id)
-    if not member:
-        return jsonify({'error': '会员不存在'}), 404
-
-    course = Course.query.get(course_id)
-    if not course:
-        return jsonify({'error': '课程不存在'}), 404
-
-    waitlist = Waitlist.query.filter_by(
-        member_id=member_id,
-        course_id=course_id,
-        status='waiting'
-    ).first()
-
-    if not waitlist:
-        return jsonify({
-            'in_waitlist': False,
-            'message': '您未在候补名单中'
-        }), 200
-
-    waitlist_count = Waitlist.query.filter_by(
-        course_id=course_id,
-        status='waiting'
-    ).count()
-
-    return jsonify({
-        'in_waitlist': True,
-        'message': f'您当前候补第{waitlist.position}位',
-        'position': waitlist.position,
-        'total_waiting': waitlist_count,
-        'waitlist': waitlist.to_dict()
-    }), 200
-
-
-@course_bp.route('/<int:course_id>/waitlist/cancel', methods=['POST'])
-def cancel_waitlist(course_id):
-    data = request.get_json()
-
-    if not data or 'member_id' not in data:
-        return jsonify({'error': '缺少会员ID'}), 400
-
-    member_id = data['member_id']
-
-    waitlist = Waitlist.query.filter_by(
-        member_id=member_id,
-        course_id=course_id,
-        status='waiting'
-    ).first()
-
-    if not waitlist:
-        return jsonify({'error': '您未在候补名单中'}), 404
-
-    waitlist.status = 'cancelled'
-    db.session.flush()
-
-    waitlists = Waitlist.query.filter_by(
-        course_id=course_id,
-        status='waiting'
-    ).order_by(Waitlist.position).all()
-
-    for idx, wl in enumerate(waitlists):
-        wl.position = idx + 1
-
-    db.session.commit()
-
-    return jsonify({
-        'message': '候补取消成功',
-        'waitlist': waitlist.to_dict()
-    }), 200
-
-
-@course_bp.route('/<int:course_id>/waitlist', methods=['GET'])
-def get_course_waitlist(course_id):
-    course = Course.query.get(course_id)
-    if not course:
-        return jsonify({'error': '课程不存在'}), 404
-
-    waitlists = Waitlist.query.filter_by(
-        course_id=course_id,
-        status='waiting'
-    ).order_by(Waitlist.position).all()
-
-    result = []
-    for wl in waitlists:
-        member = Member.query.get(wl.member_id)
-        wl_dict = wl.to_dict()
-        if member:
-            wl_dict['member_name'] = member.name
-            wl_dict['member_phone'] = member.phone
-        result.append(wl_dict)
-
-    return jsonify({
-        'course_id': course_id,
-        'course_name': course.name,
-        'total_waiting': len(result),
-        'max_waitlist': 5,
-        'waitlist': result
-    }), 200
-
-
-@course_bp.route('/member/<int:member_id>/waitlist', methods=['GET'])
-def get_member_waitlist(member_id):
-    member = Member.query.get(member_id)
-    if not member:
-        return jsonify({'error': '会员不存在'}), 404
-
-    waitlists = Waitlist.query.filter_by(
-        member_id=member_id,
-        status='waiting'
-    ).order_by(Waitlist.created_at.desc()).all()
-
-    result = []
-    for wl in waitlists:
-        course = Course.query.get(wl.course_id)
-        wl_dict = wl.to_dict()
-        if course:
-            wl_dict['course'] = course.to_dict()
-        result.append(wl_dict)
-
-    return jsonify({
-        'member_id': member_id,
-        'member_name': member.name,
-        'waitlist_count': len(result),
-        'waitlist': result
-    }), 200
 
 
 @course_bp.route('/<int:course_id>', methods=['PUT'])

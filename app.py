@@ -5,6 +5,7 @@ from api.member import member_bp
 from api.course import course_bp
 from api.checkin import checkin_bp
 from api.coach import coach_bp
+from api.waitlist import waitlist_bp
 
 
 def create_app():
@@ -17,6 +18,7 @@ def create_app():
     app.register_blueprint(course_bp, url_prefix='/api/course')
     app.register_blueprint(checkin_bp, url_prefix='/api/checkin')
     app.register_blueprint(coach_bp, url_prefix='/api/coach')
+    app.register_blueprint(waitlist_bp, url_prefix='/api/waitlist')
 
     @app.route('/api/health')
     def health_check():

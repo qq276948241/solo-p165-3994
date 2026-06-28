@@ -166,24 +166,24 @@ def run_tests():
         assert resp.status_code == 400, f"课程满员后预约应该失败"
         print(f"  ✓ 课程已满，提示可加入候补")
 
-        resp = client.post(f'/api/course/{hot_course_id}/waitlist', json={'member_id': member3_id})
+        resp = client.post(f'/api/waitlist/{hot_course_id}', json={'member_id': member3_id})
         assert resp.status_code == 201, f"加入候补失败: {resp.get_json()}"
         waitlist_data = resp.get_json()
         print(f"  ✓ {waitlist_data['message']}")
 
-        resp = client.post(f'/api/course/{hot_course_id}/waitlist', json={'member_id': member4_id})
+        resp = client.post(f'/api/waitlist/{hot_course_id}', json={'member_id': member4_id})
         assert resp.status_code == 201, f"加入候补失败: {resp.get_json()}"
         waitlist2_data = resp.get_json()
         print(f"  ✓ {waitlist2_data['message']}")
 
         print("\n[14/15] 测试查询候补位置...")
-        resp = client.get(f'/api/course/{hot_course_id}/waitlist/{member3_id}')
+        resp = client.get(f'/api/waitlist/{hot_course_id}/{member3_id}')
         assert resp.status_code == 200, f"查询候补位置失败: {resp.get_json()}"
         position_data = resp.get_json()
         print(f"  ✓ {position_data['message']}")
         assert position_data['position'] == 1, "候补位置应该是第1位"
 
-        resp = client.get(f'/api/course/{hot_course_id}/waitlist/{member4_id}')
+        resp = client.get(f'/api/waitlist/{hot_course_id}/{member4_id}')
         assert resp.status_code == 200, f"查询候补位置失败: {resp.get_json()}"
         position2_data = resp.get_json()
         print(f"  ✓ {position2_data['message']}")
@@ -199,13 +199,13 @@ def run_tests():
             converted = cancel_data['waitlist_converted']
             print(f"  ✓ {converted['message']}")
 
-        resp = client.get(f'/api/course/{hot_course_id}/waitlist/{member3_id}')
+        resp = client.get(f'/api/waitlist/{hot_course_id}/{member3_id}')
         assert resp.status_code == 200, f"查询候补位置失败: {resp.get_json()}"
         position_after = resp.get_json()
         print(f"  ✓ 候补会员3状态: {position_after['message']}")
         assert position_after['in_waitlist'] == False, "候补会员3应该已转为正式预约"
 
-        resp = client.get(f'/api/course/{hot_course_id}/waitlist/{member4_id}')
+        resp = client.get(f'/api/waitlist/{hot_course_id}/{member4_id}')
         assert resp.status_code == 200, f"查询候补位置失败: {resp.get_json()}"
         position2_after = resp.get_json()
         print(f"  ✓ {position2_after['message']}")
@@ -216,16 +216,18 @@ def run_tests():
         print("=" * 60)
 
         print("\n项目结构说明:")
-        print("  app.py           - 主应用入口")
-        print("  config.py        - 配置文件")
-        print("  models.py        - 数据模型 (Member, Membership, Coach, Course, Booking, CheckIn, Waitlist)")
-        print("  api/member.py    - 会员模块 (注册、扫码、卡信息、打卡记录)")
-        print("  api/course.py    - 课程模块 (排课、查询、预约、取消、候补)")
-        print("  api/checkin.py   - 签到模块 (扫码签到、扣次、打卡记录)")
-        print("  api/coach.py     - 教练模块 (登录、课程、学员、统计)")
-        print("  init_db.py       - 数据库初始化和测试数据")
-        print("  requirements.txt - 依赖包")
-        print("  test_api.py      - API 测试脚本")
+        print("  app.py              - 主应用入口")
+        print("  config.py           - 配置文件")
+        print("  models.py           - 数据模型 (Member, Membership, Coach, Course, Booking, Waitlist, CheckIn)")
+        print("  api/services.py     - 业务逻辑层 (会员卡校验、候补补位、位置重排)")
+        print("  api/member.py       - 会员模块 (注册、扫码、卡信息、打卡记录)")
+        print("  api/course.py       - 课程模块 (排课、查询、预约、取消)")
+        print("  api/waitlist.py     - 候补模块 (登记、查位置、取消)")
+        print("  api/checkin.py      - 签到模块 (扫码签到、扣次、打卡记录)")
+        print("  api/coach.py        - 教练模块 (登录、课程、学员、统计)")
+        print("  init_db.py          - 数据库初始化和测试数据")
+        print("  requirements.txt    - 依赖包")
+        print("  test_api.py         - API 测试脚本")
 
         print("\n启动命令:")
         print("  python app.py")
@@ -234,12 +236,12 @@ def run_tests():
         print("\n运行测试:")
         print("  python test_api.py")
 
-        print("\n候补功能接口:")
-        print("  POST /api/course/<course_id>/waitlist          - 加入候补")
-        print("  GET  /api/course/<course_id>/waitlist/<member_id> - 查询候补位置")
-        print("  POST /api/course/<course_id>/waitlist/cancel    - 取消候补")
-        print("  GET  /api/course/<course_id>/waitlist          - 查看课程候补名单")
-        print("  GET  /api/course/member/<member_id>/waitlist    - 查看会员候补列表")
+        print("\n候补功能接口 (独立 Blueprint):")
+        print("  POST /api/waitlist/<course_id>              - 加入候补")
+        print("  GET  /api/waitlist/<course_id>/<member_id>  - 查询候补位置")
+        print("  POST /api/waitlist/<course_id>/cancel        - 取消候补")
+        print("  GET  /api/waitlist/<course_id>/list          - 查看课程候补名单")
+        print("  GET  /api/waitlist/member/<member_id>        - 查看会员候补列表")
 
 
 if __name__ == '__main__':

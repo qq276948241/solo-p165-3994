@@ -152,15 +152,15 @@ class Waitlist(db.Model):
     __tablename__ = 'waitlists'
 
     id = db.Column(db.Integer, primary_key=True)
-    member_id = db.Column(db.Integer, db.ForeignKey('members.id'), nullable=False)
-    course_id = db.Column(db.Integer, db.ForeignKey('courses.id'), nullable=False)
+    member_id = db.Column(db.Integer, db.ForeignKey('members.id'), nullable=False, index=True)
+    course_id = db.Column(db.Integer, db.ForeignKey('courses.id'), nullable=False, index=True)
     position = db.Column(db.Integer, nullable=False)
-    status = db.Column(db.String(20), default='waiting')
+    status = db.Column(db.String(20), default='waiting', index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     converted_to_booking_at = db.Column(db.DateTime)
 
     __table_args__ = (
-        db.UniqueConstraint('member_id', 'course_id', name='_member_course_waitlist_uc'),
+        db.Index('ix_waitlist_course_status', 'course_id', 'status'),
     )
 
     def to_dict(self):
