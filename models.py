@@ -99,7 +99,10 @@ class Course(db.Model):
     bookings = db.relationship('Booking', backref='course', lazy=True)
 
     def get_booked_count(self):
-        return len([b for b in self.bookings if b.status == 'booked'])
+        return db.session.query(db.func.count(Booking.id)).filter(
+            Booking.course_id == self.id,
+            Booking.status == 'booked'
+        ).scalar() or 0
 
     def is_full(self):
         return self.get_booked_count() >= self.capacity

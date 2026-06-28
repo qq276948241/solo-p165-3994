@@ -40,50 +40,71 @@ def convert_waitlist_entry(waitlist_entry):
 
 
 def process_waitlist(course_id):
-    course = Course.query.get(course_id)
-    if not course or course.is_full():
-        return None
+    try:
+        course = Course.query.get(course_id)
+        if not course:
+            return None
 
-    next_entry = Waitlist.query.filter_by(
-        course_id=course_id,
-        status='waiting'
-    ).order_by(Waitlist.position).first()
+        if course.is_full():
+            return None
 
-    if not next_entry:
-        return None
+        next_entry = Waitlist.query.filter_by(
+            course_id=course_id,
+            status='waiting'
+        ).order_by(Waitlist.position).first()
 
-    member = Member.query.get(next_entry.member_id)
-    if not member:
-        next_entry.status = 'cancelled'
+        if not next_entry:
+            return None
+
+        member = Member.query.get(next_entry.member_id)
+        if not member:
+            next_entry.status = 'cancelled'
+            db.session.flush()
+            return process_waitlist(course_id)
+
+        existing_booking = Booking.query.filter_by(
+            member_id=member.id,
+            course_id=course_id,
+            status='booked'
+        ).first()
+        if existing_booking:
+            next_entry.status = 'cancelled'
+            db.session.flush()
+            return process_waitlist(course_id)
+
+        active_membership, error = validate_membership_for_booking(member)
+        if error:
+            next_entry.status = 'cancelled'
+            db.session.flush()
+            return process_waitlist(course_id)
+
+        booking = Booking(
+            member_id=member.id,
+            course_id=course_id,
+            status='booked'
+        )
+        db.session.add(booking)
         db.session.flush()
-        return process_waitlist(course_id)
 
-    active_membership, error = validate_membership_for_booking(member)
-    if error:
-        next_entry.status = 'cancelled'
+        if booking.id is None:
+            return None
+
+        next_entry.status = 'converted'
+        next_entry.converted_to_booking_at = datetime.utcnow()
+
+        reindex_waitlist_positions(course_id)
+
         db.session.flush()
-        return process_waitlist(course_id)
 
-    booking = Booking(
-        member_id=member.id,
-        course_id=course_id,
-        status='booked'
-    )
-    db.session.add(booking)
-
-    next_entry.status = 'converted'
-    next_entry.converted_to_booking_at = datetime.utcnow()
-
-    reindex_waitlist_positions(course_id)
-
-    db.session.flush()
-
-    return {
-        'member_id': member.id,
-        'member_name': member.name,
-        'member_phone': member.phone,
-        'booking': booking.to_dict()
-    }
+        return {
+            'member_id': member.id,
+            'member_name': member.name,
+            'member_phone': member.phone,
+            'booking': booking.to_dict()
+        }
+    except Exception:
+        db.session.rollback()
+        return None
 
 
 def get_waitlist_info_for_course(course_id):

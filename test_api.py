@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, '.')
 
 from app import create_app
-from models import db, Member, Membership, Coach, Course, Booking, CheckIn
+from models import db, Member, Membership, Coach, Course, Booking, CheckIn, Waitlist
 
 
 def run_tests():
@@ -156,60 +156,104 @@ def run_tests():
         print("\n[13/15] 测试约满后加入候补...")
         resp = client.post(f'/api/course/{hot_course_id}/book', json={'member_id': member_id})
         assert resp.status_code == 201, f"会员1预约失败: {resp.get_json()}"
-        print(f"  ✓ 会员1预约成功")
+        print(f"  ✓ 会员A（{member_data['member']['name']}）预约成功")
 
         resp = client.post(f'/api/course/{hot_course_id}/book', json={'member_id': member2_id})
         assert resp.status_code == 201, f"会员2预约失败: {resp.get_json()}"
-        print(f"  ✓ 会员2预约成功，课程已满")
+        print(f"  ✓ 会员B（候补会员1）预约成功，课程已满")
+
+        booked_count = Course.query.get(hot_course_id).get_booked_count()
+        print(f"  [DB] 当前已预约: {booked_count} 人 (容量: 2)")
+        assert booked_count == 2
 
         resp = client.post(f'/api/course/{hot_course_id}/book', json={'member_id': member3_id})
         assert resp.status_code == 400, f"课程满员后预约应该失败"
-        print(f"  ✓ 课程已满，提示可加入候补")
+        print(f"  ✓ 课程已满，预约接口返回 400，提示可加入候补")
 
         resp = client.post(f'/api/waitlist/{hot_course_id}', json={'member_id': member3_id})
         assert resp.status_code == 201, f"加入候补失败: {resp.get_json()}"
         waitlist_data = resp.get_json()
-        print(f"  ✓ {waitlist_data['message']}")
+        print(f"  ✓ 会员C（候补会员2）{waitlist_data['message']}")
 
         resp = client.post(f'/api/waitlist/{hot_course_id}', json={'member_id': member4_id})
         assert resp.status_code == 201, f"加入候补失败: {resp.get_json()}"
         waitlist2_data = resp.get_json()
-        print(f"  ✓ {waitlist2_data['message']}")
+        print(f"  ✓ 会员D（候补会员3）{waitlist2_data['message']}")
+
+        wl_c_waiting = Waitlist.query.filter_by(member_id=member3_id, course_id=hot_course_id, status='waiting').first()
+        wl_d_waiting = Waitlist.query.filter_by(member_id=member4_id, course_id=hot_course_id, status='waiting').first()
+        print(f"  [DB] 会员C 候补状态: status={wl_c_waiting.status}, position={wl_c_waiting.position}")
+        print(f"  [DB] 会员D 候补状态: status={wl_d_waiting.status}, position={wl_d_waiting.position}")
+        assert wl_c_waiting.position == 1
+        assert wl_d_waiting.position == 2
 
         print("\n[14/15] 测试查询候补位置...")
         resp = client.get(f'/api/waitlist/{hot_course_id}/{member3_id}')
         assert resp.status_code == 200, f"查询候补位置失败: {resp.get_json()}"
         position_data = resp.get_json()
-        print(f"  ✓ {position_data['message']}")
-        assert position_data['position'] == 1, "候补位置应该是第1位"
+        print(f"  ✓ 会员C: {position_data['message']}")
+        assert position_data['position'] == 1
 
         resp = client.get(f'/api/waitlist/{hot_course_id}/{member4_id}')
         assert resp.status_code == 200, f"查询候补位置失败: {resp.get_json()}"
         position2_data = resp.get_json()
-        print(f"  ✓ {position2_data['message']}")
-        assert position2_data['position'] == 2, "候补位置应该是第2位"
+        print(f"  ✓ 会员D: {position2_data['message']}")
+        assert position2_data['position'] == 2
 
-        print("\n[15/15] 测试取消预约后自动补上候补...")
+        print("\n[15/15] 测试会员A取消预约，会员C自动顶上，会员D顺位前移...")
+        print(f"  [取消前 DB 快照]")
+        a_booking = Booking.query.filter_by(member_id=member_id, course_id=hot_course_id, status='booked').first()
+        c_booking_before = Booking.query.filter_by(member_id=member3_id, course_id=hot_course_id, status='booked').first()
+        print(f"    会员A Booking: id={a_booking.id}, status={a_booking.status}")
+        print(f"    会员C Booking: {c_booking_before} (应为 None)")
+        assert c_booking_before is None
+
         resp = client.post(f'/api/course/{hot_course_id}/cancel', json={'member_id': member_id})
         assert resp.status_code == 200, f"取消预约失败: {resp.get_json()}"
         cancel_data = resp.get_json()
-        print(f"  ✓ 会员1取消预约成功")
+        print(f"  ✓ 会员A取消预约成功")
 
-        if 'waitlist_converted' in cancel_data:
-            converted = cancel_data['waitlist_converted']
-            print(f"  ✓ {converted['message']}")
+        assert 'waitlist_converted' in cancel_data, "取消预约后应返回自动补位信息"
+        converted = cancel_data['waitlist_converted']
+        print(f"  ✓ {converted['message']}")
+        assert converted['member']['member_id'] == member3_id
+
+        print(f"  [取消后 DB 快照]")
+        a_booking_after = Booking.query.get(a_booking.id)
+        print(f"    会员A Booking: id={a_booking_after.id}, status={a_booking_after.status}")
+        assert a_booking_after.status == 'cancelled'
+
+        c_booking_after = Booking.query.filter_by(member_id=member3_id, course_id=hot_course_id, status='booked').first()
+        print(f"    会员C Booking: id={c_booking_after.id if c_booking_after else None}, status={c_booking_after.status if c_booking_after else None}")
+        assert c_booking_after is not None, "会员C 应该有一条新的 Booking 记录"
+        assert c_booking_after.status == 'booked'
+
+        wl_c_after = Waitlist.query.filter_by(member_id=member3_id, course_id=hot_course_id).first()
+        print(f"    会员C Waitlist: id={wl_c_after.id}, status={wl_c_after.status}, converted_at={wl_c_after.converted_to_booking_at}")
+        assert wl_c_after.status == 'converted', "候补记录 status 应为 'converted'"
+        assert wl_c_after.converted_to_booking_at is not None
+
+        wl_d_after = Waitlist.query.filter_by(member_id=member4_id, course_id=hot_course_id, status='waiting').first()
+        print(f"    会员D Waitlist: id={wl_d_after.id}, status={wl_d_after.status}, position={wl_d_after.position}")
+        assert wl_d_after.position == 1, "会员D 应该前移到第 1 位"
 
         resp = client.get(f'/api/waitlist/{hot_course_id}/{member3_id}')
         assert resp.status_code == 200, f"查询候补位置失败: {resp.get_json()}"
         position_after = resp.get_json()
-        print(f"  ✓ 候补会员3状态: {position_after['message']}")
-        assert position_after['in_waitlist'] == False, "候补会员3应该已转为正式预约"
+        print(f"  ✓ 会员C候补状态: {position_after['message']}")
+        assert position_after['in_waitlist'] == False, "会员C 应该已不在候补名单中"
 
         resp = client.get(f'/api/waitlist/{hot_course_id}/{member4_id}')
         assert resp.status_code == 200, f"查询候补位置失败: {resp.get_json()}"
         position2_after = resp.get_json()
-        print(f"  ✓ {position2_after['message']}")
-        assert position2_after['position'] == 1, "候补会员4应该前移到第1位"
+        print(f"  ✓ 会员D候补状态: {position2_after['message']}")
+        assert position2_after['position'] == 1, "会员D 应该前移到第1位"
+
+        final_booked = Course.query.get(hot_course_id).get_booked_count()
+        final_waiting = Waitlist.query.filter_by(course_id=hot_course_id, status='waiting').count()
+        print(f"  ✓ 最终状态: 已预约 {final_booked} 人, 候补 {final_waiting} 人")
+        assert final_booked == 2
+        assert final_waiting == 1
 
         print("\n" + "=" * 60)
         print("🎉 所有测试通过！候补功能正常！")

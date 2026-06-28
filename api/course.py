@@ -169,6 +169,10 @@ def book_course(course_id):
     db.session.add(booking)
     db.session.flush()
 
+    if booking.id is None:
+        db.session.rollback()
+        return jsonify({'error': '预约创建失败'}), 500
+
     if existing_waitlist:
         convert_waitlist_entry(existing_waitlist)
 
